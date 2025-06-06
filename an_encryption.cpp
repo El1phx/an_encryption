@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <cassert>
+#include <stdexcept>
 using namespace std;
 
 const size_t BLOCK_BITS = 1024;
@@ -48,6 +49,32 @@ const unsigned char Rcon[18] = {
     0x1B, 0x36, 0x6C, 0xD8, 0xAB, 0x4D, 0x9A, 0x2F, 0x5E
 };
 
+// 自逆加密/解密函数
+void selfInverseCipher(
+    vector<vector<unsigned char>>& blocks,
+    const vector<unsigned char>& master_key
+) {
+    const size_t BLOCK_BYTES = 128; // 1024 bits = 128 bytes
+
+    // 检查密钥长度
+    if (master_key.size() != BLOCK_BYTES) {
+        throw invalid_argument("Master key must be 128 bytes (1024 bits)");
+    }
+
+    // 处理每个数据块
+    for (auto& block : blocks) {
+        // 检查块长度
+        if (block.size() != BLOCK_BYTES) {
+            throw invalid_argument("Each block must be 128 bytes (1024 bits)");
+        }
+
+        // 逐字节异或加密
+        for (size_t i = 0; i < BLOCK_BYTES; ++i) {
+            block[i] ^= master_key[i]; // 异或操作实现自逆特性
+        }
+    }
+}
+
 // 从文件读取密钥
 vector<unsigned char> read_key(const string& filename) {
     ifstream file(filename, ios::binary);
@@ -71,165 +98,7 @@ vector<unsigned char> read_key(const string& filename) {
     return key;
 }
 
-// 密钥扩展算法 
-vector<vector<unsigned char>> expand_key(const vector<unsigned char>& master_key) {
-    const int rounds = 16;  // 直接生成16个轮密钥
-    const int key_size = 128;
-    vector<vector<unsigned char>> round_keys;
-    vector<unsigned char> current_key = master_key;
 
-    for (int round = 0; round < rounds; ++round) {
-        // 1. 字节替换
-        for (int i = 0; i < key_size; ++i) {
-            current_key[i] = SBOX[current_key[i]];
-        }
-
-        // 2. 循环移位
-        rotate(current_key.begin(), current_key.begin() + (round % 8) + 1, current_key.end());
-
-        // 3. 添加轮常数
-        for (int i = 0; i < key_size; i += 16) {
-            current_key[i] ^= Rcon[round + 1];
-        }
-
-        // 4. 矩阵变换
-        for (int i = 0; i < key_size; i += 8) {
-            vector<unsigned char> temp(8, 0);
-            for (int row = 0; row < 8; ++row) {
-                for (int col = 0; col < 8; ++col) {
-                    unsigned char a = current_key[i + col];
-                    unsigned char b = MIX_MATRIX[row][col];
-                    unsigned char p = 0;
-                    for (int counter = 0; counter < 8; counter++) {
-                        if (b & 1) p ^= a;
-                        bool hi_bit_set = (a & 0x80);
-                        a <<= 1;
-                        if (hi_bit_set) a ^= 0x1B;
-                        b >>= 1;
-                    }
-                    temp[row] ^= p;
-                }
-            }
-            copy(temp.begin(), temp.end(), current_key.begin() + i);
-        }
-
-        // 保存当前轮密钥
-        round_keys.push_back(current_key);
-    }
-    return round_keys;
-}
-
-// 单轮Feistel变换
-void feistel_round(vector<unsigned char>& left, vector<unsigned char>& right,
-    const vector<unsigned char>& round_key)
-{
-    const int block_size = 64;
-    vector<unsigned char> original_right = right;
-
-    // 1. 轮密钥加
-    for (int i = 0; i < block_size; ++i) {
-        right[i] ^= round_key[i % round_key.size()];
-    }
-
-    // 2. 字节替换
-    for (int i = 0; i < block_size; ++i) {
-        right[i] = SBOX[right[i]];
-    }
-
-    // 3. 行移位
-    for (int i = 0; i < 8; ++i) {
-        int shift = (i % 4) + 1;
-        rotate(right.begin() + i * 8,
-        right.begin() + i * 8 + shift,
-        right.begin() + (i + 1) * 8);
-    }
-
-    // 4. 列混合
-    for (int col = 0; col < 8; ++col) {
-        vector<unsigned char> column(8);
-        for (int row = 0; row < 8; ++row) {
-            column[row] = right[col + row * 8];
-        }
-
-        for (int row = 0; row < 8; ++row) {
-            unsigned char val = 0;
-            for (int k = 0; k < 8; ++k) {
-                unsigned char a = column[k];
-                unsigned char b = MIX_MATRIX[row][k];
-                unsigned char p = 0;
-                for (int counter = 0; counter < 8; counter++) {
-                    if (b & 1) p ^= a;
-                    bool hi_bit_set = (a & 0x80);
-                    a <<= 1;
-                    if (hi_bit_set) a ^= 0x1B;
-                    b >>= 1;
-                }
-                val ^= p;
-            }
-            right[col + row * 8] = val;
-        }
-    }
-
-    // 5. 更新左块和右块
-    vector<unsigned char> new_right(block_size);
-    for (int i = 0; i < block_size; ++i) {
-        new_right[i] = left[i] ^ right[i];
-    }
-    left = original_right;
-    right = new_right;
-}
-
-// 块处理函数 
-void process_block(vector<unsigned char>& block,
-    const vector<vector<unsigned char>>& round_keys,
-    bool is_encrypt) {
-    const int block_size = block.size();
-    if (block_size != 128) {
-        throw invalid_argument("The block size must be 128 bytes (1024 bits)");
-    }
-
-    vector<unsigned char> left(block.begin(), block.begin() + 64);
-    vector<unsigned char> right(block.begin() + 64, block.end());
-
-    // 初始变换 (加密用第一个密钥，解密用最后一个密钥)
-    int init_key_idx = is_encrypt ? 0 : 15;
-    for (int i = 0; i < 64; ++i) {
-        left[i] ^= round_keys[init_key_idx][i];
-        right[i] ^= round_keys[init_key_idx][i + 64];
-    }
-
-    // Feistel 轮处理
-    if (is_encrypt) {
-        for (int round = 0; round < 16; ++round) {
-            feistel_round(left, right, round_keys[round]);
-        }
-    }
-    else {
-        for (int round = 15; round >= 0; --round) {
-            feistel_round(left, right, round_keys[round]);
-        }
-    }
-
-    // 最终变换 (加密用最后一个密钥，解密用第一个密钥)
-    int final_key_idx = is_encrypt ? 15 : 0;
-    for (int i = 0; i < 64; ++i) {
-        left[i] ^= round_keys[final_key_idx][i];
-        right[i] ^= round_keys[final_key_idx][i + 64];
-    }
-
-    // 合并结果
-    copy(left.begin(), left.end(), block.begin());
-    copy(right.begin(), right.end(), block.begin() + 64);
-}
-
-// 处理所有块
-void process_blocks(vector<vector<unsigned char>>& blocks,
-    const vector<vector<unsigned char>>& round_keys,
-    bool is_encrypt) {
-    for (auto& block : blocks) {
-        process_block(block, round_keys,is_encrypt);
-    }
-}
 
 // 生成随机字节的函数
 unsigned char generateRandomByte() {
@@ -386,17 +255,10 @@ int main() {
     try {
         // 1. 读取密钥
         auto master_key = read_key(key_filename);
-
-        // 2. 密钥扩展
-        auto round_keys = expand_key(master_key);
-
-        // 3. 加密块
-        process_blocks(blocks, round_keys,true);
-        cout << "Encryption completed successfully.\n";
-
-        // 4. 解密块
-        process_blocks(blocks, round_keys,false);
-        cout << "Decryption completed successfully.\n";
+        // 2. 加密
+        selfInverseCipher(blocks, master_key);
+        // 3. 解密
+        selfInverseCipher(blocks, master_key);
     }
     catch (const exception& e) {
         cerr << "Error: " << e.what() << endl;
