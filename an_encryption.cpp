@@ -35,8 +35,7 @@ const unsigned char SBOX[256] = {
 
 void transformBlock(std::vector<unsigned char>& block, const std::vector<unsigned char>& roundKey) {
     const int blockSize = BLOCK_BYTES; // 128字节
-    //块内字节反转
-    reverse(block.begin(), block.end());
+
     // 轮密钥加
     for (int i = 0; i < blockSize; ++i) {
         block[i] ^= roundKey[i];
@@ -46,6 +45,8 @@ void transformBlock(std::vector<unsigned char>& block, const std::vector<unsigne
         for (int i = 0; i < blockSize; ++i) {
             block[i] = SBOX[block[i]];
         }
+        //块内字节反转
+        reverse(block.begin(), block.end());
 
         // 轮密钥加
         for (int i = 0; i < blockSize; ++i) {
@@ -68,8 +69,6 @@ void transformBlock(std::vector<unsigned char>& block, const std::vector<unsigne
                 block.begin() + rowStart + 8);
         }
     }
-    //块内字节反转
-    reverse(block.begin(), block.end());
 }
 
 // 主加密/解密函数
